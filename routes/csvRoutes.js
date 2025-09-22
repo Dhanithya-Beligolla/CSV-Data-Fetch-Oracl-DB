@@ -18,7 +18,8 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // 📌 Upload CSV
-router.post("/upload", upload.single("file"), async (req, res) => {
+router.post("/upload", upload.single("csv"), async (req, res) => {
+console.log("📂 Uploaded file:", req.file);  // 👈 check what Multer receives
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   try {
