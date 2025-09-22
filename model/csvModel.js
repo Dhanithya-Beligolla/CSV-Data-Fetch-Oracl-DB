@@ -1,43 +1,47 @@
-import { execute, initialize } from "../db/config.js";
+import oracledb from "oracledb";
+import dotenv from "dotenv";
 
-const TABLE_NAME = "CMS_CSV_DATA";
+dotenv.config();
 
-// Ensure table exists
+let pool;
+
 export async function init() {
-  await initialize();
-
-  const check = await execute(
-    `SELECT table_name FROM user_tables WHERE table_name = :tn`,
-    { tn: TABLE_NAME }
-  );
-
-  if (!check.rows || check.rows.length === 0) {
-    await execute(`
-      CREATE TABLE ${TABLE_NAME} (
-        id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        name VARCHAR2(100),
-        employNumber VARCHAR2(50),
-        age NUMBER,
-        dateOfBirth VARCHAR2(50)
-      )
-    `);
-    console.log(`Created table '${TABLE_NAME}' in Oracle DB.`);
+  if (!pool) {
+    pool = await oracledb.createPool({
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      connectString: process.env.DB_CONNECT_STRING,
+    });
+    console.log("✅ Oracle pool initialized");
   }
+
+  // Ensure table exists
+  const conn = await pool.getConnection();
+  await conn.execute(`
+    BEGIN
+      EXECUTE IMMEDIATE '
+        CREATE TABLE CMS_CSV_DATA (
+          NAME VARCHAR2(100),
+          EMPLOYEENUMBER VARCHAR2(50),
+          AGE NUMBER,
+          DATEOFBIRTH VARCHAR2(20)
+        )';
+    EXCEPTION
+      WHEN OTHERS THEN
+        IF SQLCODE != -955 THEN RAISE; END IF; -- ignore "table already exists"
+    END;`);
+  await conn.close();
 }
 
 // Insert CSV rows
 export async function insertCSVData(rows) {
-  for (const row of rows) {
-    await execute(
-      `INSERT INTO ${TABLE_NAME} (name, employNumber, age, dateOfBirth)
-       VALUES (:name, :employNumber, :age, :dateOfBirth)`,
-      row
-    );
-  }
-}
+  const conn = await pool.getConnection();
 
-// List all rows
-export async function listCSVData() {
-  const res = await execute(`SELECT * FROM ${TABLE_NAME} ORDER BY id DESC`);
-  return res.rows || [];
+  const sql = `
+    INSERT INTO CMS_CSV_DATA (NAME, EMPLOYEENUMBER, AGE, DATEOFBIRTH)
+    VALUES (:NAME, :EMPLOYEENUMBER, :AGE, :DATEOFBIRTH)
+  `;
+
+  await conn.executeMany(sql, rows, { autoCommit: true });
+  await conn.close();
 }
