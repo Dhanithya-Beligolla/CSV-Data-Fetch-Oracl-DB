@@ -3,7 +3,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import csvParser from "csv-parser";
-import { insertCSVData, init } from "../model/csvModel.js";
+import { insertCSVData, listCSVData,  init } from "../model/csvModel.js";
 
 const router = express.Router();
 
@@ -60,6 +60,19 @@ router.post("/upload", upload.single("csv"), async (req, res) => {
       });
   } catch (err) {
     console.error("❌ Upload Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+//Get all data from the Oracle DB
+router.get("/data", async (req, res) => {
+  try {
+    await init(); // ensure DB + table exists
+
+    const data = await listCSVData();
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Fetch Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
