@@ -3,7 +3,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import csvParser from "csv-parser";
-import { insertCSVData, listCSVData,  init } from "../model/csvModel.js";
+import { insertCSVData, listCSVData, init, COLUMNS } from "../model/csvModel.js";
 
 const router = express.Router();
 
@@ -28,35 +28,51 @@ router.post("/upload", upload.single("csv"), async (req, res) => {
     await init(); // ensure DB + table exists
 
     const results = [];
+    const normalizedColumnSet = new Set(COLUMNS.map(c => c.toLowerCase()));
 
-    // Parse CSV
+    function normalizeHeader(h) {
+      return h
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '_')  // spaces to underscore
+        .replace(/\./g, '_');   // dots to underscore
+    }
+
     fs.createReadStream(req.file.path)
       .pipe(csvParser())
+      .on("headers", (headers) => {
+        console.log("📑 CSV Headers:", headers);
+      })
       .on("data", (row) => {
-        // Map row → table columns (keep column names in your CSV same as DB)
-        results.push({
-          NAME: row.Name,
-          EMPLOYEENUMBER: row.EmployNumber,
-          AGE: parseInt(row.Age, 10),
-          DATEOFBIRTH: row.DateOfBirth,
-        });
+        const mapped = {};
+        let hasValue = false;
+        for (const rawKey in row) {
+          const norm = normalizeHeader(rawKey);
+            if (normalizedColumnSet.has(norm)) {
+              const colName = COLUMNS.find(c => c.toLowerCase() === norm);
+              let v = row[rawKey];
+              if (v === '') v = null;
+              if (v !== null && v !== undefined) hasValue = true;
+              mapped[colName] = v;
+            }
+        }
+        // Ensure all columns exist, fill null for missing
+        COLUMNS.forEach(c => { if (!(c in mapped)) mapped[c] = null; });
+        if (hasValue) results.push(mapped);
       })
       .on("end", async () => {
         try {
-          // Insert into Oracle
           await insertCSVData(results);
-
-          // Delete file after processing (optional)
           fs.unlinkSync(req.file.path);
-
-          res.json({
-            message: "✅ CSV data saved to Oracle DB",
-            inserted: results.length,
-          });
+          res.json({ message: "✅ CSV data saved to Oracle DB", inserted: results.length });
         } catch (err) {
           console.error("❌ DB Insert Error:", err);
           res.status(500).json({ error: "Database insert failed" });
         }
+      })
+      .on("error", (err) => {
+        console.error("❌ CSV Parse Error:", err);
+        res.status(500).json({ error: "CSV parse failed" });
       });
   } catch (err) {
     console.error("❌ Upload Error:", err);
