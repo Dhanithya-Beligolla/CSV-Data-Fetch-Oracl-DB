@@ -45,3 +45,19 @@ export async function insertCSVData(rows) {
   await conn.executeMany(sql, rows, { autoCommit: true });
   await conn.close();
 }
+
+
+// List all data
+export async function listCSVData() {
+    const conn = await pool.getConnection();
+    try {
+        const result = await conn.execute(
+            `SELECT NAME, EMPLOYEENUMBER, AGE, DATEOFBIRTH FROM CMS_CSV_DATA`,
+            [],
+            { outFormat: oracledb.OUT_FORMAT_OBJECT }
+        );
+        return result.rows || [];
+    } finally {
+        await conn.close();
+    }
+}
