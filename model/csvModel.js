@@ -5,7 +5,6 @@ dotenv.config();
 
 let pool;
 
-// Central column list (exported for route mapping)
 export const COLUMNS = [
   'cr1f8_acceptedby',
   'cr1f9_acceptedby',
@@ -56,10 +55,16 @@ export const COLUMNS = [
   'owningbusinessunit',
   'cr1f8_product',
   'cr1f8_sla_days',
-  'cr1f8_closedby_azureactivedirectoryobjectid' // replaced dot with underscore
+  'cr1f8_closedby_azureactivedirectoryobjectid'
 ];
 
+// All columns as CLOB to avoid length issues (adjust later if needed)
+const COLUMN_TYPES = {};
+COLUMNS.forEach(c => { COLUMN_TYPES[c] = 'CLOB'; });
+
 export async function init() {
+  // Ensure CLOBs come back as strings to avoid circular JSON / streaming LOB objects
+  oracledb.fetchAsString = [ oracledb.CLOB ];
   if (!pool) {
     pool = await oracledb.createPool({
       user: process.env.DB_USER,
@@ -71,8 +76,20 @@ export async function init() {
 
   const conn = await pool.getConnection();
   try {
-    // Build CREATE TABLE statement dynamically. Using VARCHAR2(4000) for flexibility.
-    const columnDefs = COLUMNS.map(col => `${col} VARCHAR2(4000)`).join(',\n          ');
+    if (process.env.FORCE_RECREATE_TABLE === 'true') {
+      await conn.execute(`
+        BEGIN
+          EXECUTE IMMEDIATE 'DROP TABLE CMS_DATA PURGE';
+        EXCEPTION
+          WHEN OTHERS THEN
+            IF SQLCODE != -942 THEN RAISE; END IF;
+        END;`);
+      console.log("♻️ Dropped existing CMS_DATA");
+    }
+
+    const columnDefs = COLUMNS
+      .map(col => `${col} ${COLUMN_TYPES[col]}`)
+      .join(',\n          ');
     const createSql = `CREATE TABLE CMS_DATA (\n          ${columnDefs}\n        )`;
 
     await conn.execute(`
@@ -80,11 +97,21 @@ export async function init() {
         EXECUTE IMMEDIATE '${createSql.replace(/'/g, "''")}';
       EXCEPTION
         WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF; -- ignore "table already exists"
+          IF SQLCODE != -955 THEN RAISE; END IF;
       END;`);
   } finally {
     await conn.close();
   }
+}
+
+function sanitizeRow(row) {
+  const sanitized = {};
+  for (const c of COLUMNS) {
+    let v = row[c];
+    if (v === undefined || v === '') v = null;
+    sanitized[c] = v;
+  }
+  return sanitized;
 }
 
 // Insert CSV rows - rows should be array of objects whose keys match COLUMNS
@@ -96,14 +123,16 @@ export async function insertCSVData(rows) {
     const bindNames = COLUMNS.map(c => `:${c}`).join(', ');
     const sql = `INSERT INTO CMS_DATA (${colList}) VALUES (${bindNames})`;
 
-    // Map rows to binds ensuring every column exists (undefined -> null)
-    const binds = rows.map(r => {
-      const obj = {};
-      COLUMNS.forEach(c => { obj[c] = r[c] ?? null; });
-      return obj;
-    });
+    const binds = rows.map(r => sanitizeRow(r));
 
-    await conn.executeMany(sql, binds, { autoCommit: true });
+    try {
+      await conn.executeMany(sql, binds, { autoCommit: true });
+    } catch (err) {
+      if (err && err.errorNum === 12899) {
+        console.error('❌ ORA-12899 still occurred even with CLOB columns. Check if table was recreated. Set FORCE_RECREATE_TABLE=true and restart to drop & recreate.');
+      }
+      throw err;
+    }
   } finally {
     await conn.close();
   }
@@ -119,7 +148,21 @@ export async function listCSVData() {
       [],
       { outFormat: oracledb.OUT_FORMAT_OBJECT }
     );
-    return result.rows || [];
+    const rows = result.rows || [];
+    // Defensive: ensure no Lob objects remain
+    return rows.map(r => {
+      const clean = {};
+      for (const k in r) {
+        const v = r[k];
+        if (v && typeof v === 'object' && v.iLob) {
+          // Should not happen with fetchAsString, but safeguard
+          clean[k] = String(v);
+        } else {
+          clean[k] = v;
+        }
+      }
+      return clean;
+    });
   } finally {
     await conn.close();
   }
