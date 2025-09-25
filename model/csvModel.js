@@ -58,9 +58,24 @@ export const COLUMNS = [
   'cr1f8_closedby_azureactivedirectoryobjectid'
 ];
 
-// All columns as CLOB to avoid length issues (adjust later if needed)
+// Choose which columns truly need CLOB (very long free-text) vs VARCHAR2
+// Key column must NOT be CLOB because Oracle cannot use '=' with CLOB without functions.
+const KEY_COLUMN = 'cr1f8_complainrefno';
+const LONG_TEXT_COLUMNS = new Set([
+  'cr1f8_closingcomment',
+  'cr1f8_complaint_description',
+  'cr1f8_reopeningcomment'
+]);
 const COLUMN_TYPES = {};
-COLUMNS.forEach(c => { COLUMN_TYPES[c] = 'CLOB'; });
+COLUMNS.forEach(c => {
+  if (c === KEY_COLUMN) {
+    COLUMN_TYPES[c] = 'VARCHAR2(1000)'; // adjust length if necessary
+  } else if (LONG_TEXT_COLUMNS.has(c)) {
+    COLUMN_TYPES[c] = 'CLOB';
+  } else {
+    COLUMN_TYPES[c] = 'VARCHAR2(4000)';
+  }
+});
 
 export async function init() {
   // Ensure CLOBs come back as strings to avoid circular JSON / streaming LOB objects
@@ -163,6 +178,49 @@ export async function listCSVData() {
       }
       return clean;
     });
+  } finally {
+    await conn.close();
+  }
+}
+
+// Update by CR1F8_COMPLAINREFNO (case-insensitive key provided as parameter)
+export async function updateByComplainRef(refNo, fields) {
+  if (!refNo) throw new Error('refNo required');
+  if (!fields || typeof fields !== 'object') throw new Error('fields object required');
+
+  // Normalize provided field names to actual column names
+  const changes = [];
+  for (const k of Object.keys(fields)) {
+    if (k.toLowerCase() === 'cr1f8_complainrefno') continue; // don't allow changing key
+    const col = COLUMNS.find(c => c.toLowerCase() === k.toLowerCase());
+    if (col) {
+      changes.push({ col, value: fields[k] });
+    }
+  }
+  if (changes.length === 0) return { rowsAffected: 0, message: 'No valid columns to update' };
+
+  const setClause = changes.map((c, i) => `${c.col} = :v${i}`).join(', ');
+  const binds = { refNo };
+  changes.forEach((c, i) => { binds[`v${i}`] = c.value; });
+
+  const conn = await pool.getConnection();
+  try {
+    // Determine datatype of key column (in case table existed from old schema as CLOB)
+    const dtRes = await conn.execute(
+      `SELECT DATA_TYPE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = 'CMS_DATA' AND COLUMN_NAME = :col`,
+      { col: KEY_COLUMN.toUpperCase() }
+    );
+    const dataType = dtRes.rows?.[0]?.[0];
+    let sql;
+    if (dataType === 'CLOB') {
+      // Use DBMS_LOB.COMPARE for CLOB equality (returns 0 when equal)
+      sql = `UPDATE CMS_DATA SET ${setClause} WHERE DBMS_LOB.COMPARE(${KEY_COLUMN}, :refNo) = 0`;
+      // For CLOB compare we need refNo as a temporary CLOB; oracle driver will bind string -> CLOB
+    } else {
+      sql = `UPDATE CMS_DATA SET ${setClause} WHERE ${KEY_COLUMN} = :refNo`;
+    }
+    const result = await conn.execute(sql, binds, { autoCommit: true });
+    return { rowsAffected: result.rowsAffected || 0, keyType: dataType };
   } finally {
     await conn.close();
   }
