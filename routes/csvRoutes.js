@@ -3,7 +3,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import csvParser from "csv-parser";
-import { insertCSVData, listCSVData, init, COLUMNS } from "../model/csvModel.js";
+import { insertCSVData, listCSVData, init, COLUMNS, updateByComplainRef } from "../model/csvModel.js";
 
 const router = express.Router();
 
@@ -89,6 +89,37 @@ router.get("/data", async (req, res) => {
     res.json(data);
   } catch (err) {
     console.error("❌ Fetch Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update via encoded path param (client must URL-encode slashes & spaces)
+router.put('/data/:refNo', async (req, res) => {
+  try {
+    await init();
+  const refNo = decodeURIComponent(req.params.refNo);
+    const payload = req.body || {};
+    if (!refNo) return res.status(400).json({ error: 'refNo param required' });
+    const result = await updateByComplainRef(refNo, payload);
+    if (result.rowsAffected === 0) return res.status(404).json({ message: 'Not found or nothing updated' });
+    res.json({ message: 'Updated', refNo, rowsAffected: result.rowsAffected });
+  } catch (err) {
+    console.error('❌ Update Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update via body { refNo, ...fields }
+router.put('/data', async (req, res) => {
+  try {
+    await init();
+    const { refNo, ...fields } = req.body || {};
+    if (!refNo) return res.status(400).json({ error: 'refNo required in body' });
+    const result = await updateByComplainRef(refNo, fields);
+    if (result.rowsAffected === 0) return res.status(404).json({ message: 'Not found or nothing updated' });
+    res.json({ message: 'Updated', refNo, rowsAffected: result.rowsAffected });
+  } catch (err) {
+    console.error('❌ Update Error (body):', err);
     res.status(500).json({ error: err.message });
   }
 });
