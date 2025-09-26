@@ -2,17 +2,21 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import csvRoutes from "./routes/csvRoutes.js";
+import apiRoutes from "./routes/index.js";
 import { initialize } from "./db/config.js";
 import { init as initCSVTable } from "./model/csvModel.js";
 
 dotenv.config();
 const app = express();
 
+
 app.use(cors());
 app.use(express.json());
 
 // Routes
 app.use("/csv", csvRoutes);
+// Routes
+app.use('/api', apiRoutes);
 
 // Start server + initialize DB
 const PORT = process.env.PORT || 5345;
